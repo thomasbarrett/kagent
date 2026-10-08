@@ -47,12 +47,12 @@ type AgentSpec struct {
 	// +listType=map
 	// +listMapKey=origin
 	// +kubebuilder:validation:MaxItems=64
-	Egress []AgentEgress `json:"egress,omitempty"`
+	Egress []EgressEntry `json:"egress,omitempty"`
 }
 
-// AgentEgress is one origin an Agent may reach.
+// EgressEntry is one origin a runtime may reach.
 // +kubebuilder:validation:XValidation:rule="!has(self.headers) || (self.origin.startsWith('https://') && !self.origin.contains('*'))",message="headers need an exact https origin"
-type AgentEgress struct {
+type EgressEntry struct {
 	// Origin is an HTTP(S) origin, such as "https://proxy.golang.org".
 	// +required
 	// +kubebuilder:validation:MaxLength=270
@@ -61,7 +61,7 @@ type AgentEgress struct {
 	// Headers the egress gateway sets, so the runtime never holds their
 	// values. The gateway only replaces a header the request sends, so the
 	// runtime sends each with a placeholder. Credentials bind per host, not
-	// per port. Whoever can write the Agent can send any Secret in its
+	// per port. Whoever can write the resource can send any Secret in its
 	// namespace to the origin.
 	// +optional
 	// +listType=map
@@ -90,7 +90,7 @@ type EgressHeader struct {
 // EgressHeaderSource is where a header's value comes from.
 // +kubebuilder:validation:XValidation:rule="has(self.secretKeyRef)",message="secretKeyRef is required"
 type EgressHeaderSource struct {
-	// SecretKeyRef is a key of a Secret in the Agent's namespace.
+	// SecretKeyRef is a key of a Secret in the resource's namespace.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self.name != '' && self.key != ''",message="secretKeyRef needs a name and a key"
 	// +kubebuilder:validation:XValidation:rule="!has(self.optional) || !self.optional",message="a header's Secret cannot be optional"

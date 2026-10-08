@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"net/url"
-	"slices"
-	"strings"
 
 	"github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"github.com/kagent-dev/kagent/go/core/internal/egress"
@@ -128,7 +125,7 @@ func (c *Compiler) CompileAgent(ctx context.Context, agent *v1alpha3.Agent) (*Co
 		}
 		harness = harnessConfiguration(*found)
 	}
-	credentials, err := c.agentEgressCredentials(agent)
+	credentials, err := EgressCredentials(agent.Namespace, agent.Spec.Egress, c.requireSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +134,11 @@ func (c *Compiler) CompileAgent(ctx context.Context, agent *v1alpha3.Agent) (*Co
 		return nil, err
 	}
 	result.AgentUID = string(agent.UID)
-	result.EgressDestinations, err = withAgentEgress(result.EgressDestinations, agent.Spec.Egress)
+	result.EgressDestinations, err = WithEgress(result.EgressDestinations, agent.Spec.Egress)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkEgressHeaderPorts(result.EgressDestinations, agent.Spec.Egress); err != nil {
+	if err := CheckEgressHeaderPorts(result.EgressDestinations, agent.Spec.Egress); err != nil {
 		return nil, err
 	}
 	result.Provenance, err = json.Marshal(struct {
@@ -156,111 +153,9 @@ func (c *Compiler) CompileAgent(ctx context.Context, agent *v1alpha3.Agent) (*Co
 	return result, nil
 }
 
-// withAgentEgress adds the Agent's declared origins to the destinations its
-// runtime compiled, in canonical form and once each. Every runtime gets the
-// same treatment, so no runtime compiler reads the Agent's egress.
-func withAgentEgress(compiled []string, declared []v1alpha3.AgentEgress) ([]string, error) {
-	if len(declared) == 0 {
-		return compiled, nil
-	}
-	destinations := slices.Clone(compiled)
-	for _, entry := range declared {
-		origin, err := egress.ParseOrigin(entry.Origin)
-		if err != nil {
-			return nil, NewValidationError("Agent egress: %v", err)
-		}
-		if !slices.Contains(destinations, origin) {
-			destinations = append(destinations, origin)
-		}
-	}
-	return destinations, nil
-}
-
-// agentEgressCredentials compiles the Agent's egress headers to gateway
-// bindings. Fetching each Secret makes the Agent recompile when it appears.
-func (c *Compiler) agentEgressCredentials(agent *v1alpha3.Agent) ([]egress.Credential, error) {
-	var bindings []egress.Credential
-	for _, entry := range agent.Spec.Egress {
-		if len(entry.Headers) == 0 {
-			continue
-		}
-		host, _, err := headerOrigin(entry.Origin)
-		if err != nil {
-			return nil, err
-		}
-		for _, header := range entry.Headers {
-			ref := header.ValueFrom.SecretKeyRef
-			if ref == nil {
-				return nil, NewValidationError("egress %q header %q: secretKeyRef is required", entry.Origin, header.Name)
-			}
-			binding := egress.Credential{
-				Hostname: host,
-				Header:   header.Name,
-				Prefix:   header.Prefix,
-				URI:      "ate-secret://k8s.io/default/" + agent.Namespace + "/" + ref.Name + "/" + ref.Key,
-			}
-			// A malformed reference can never resolve, so it is invalid, not missing.
-			if _, err := egress.CanonicalCredentials([]egress.Credential{binding}); err != nil {
-				return nil, NewValidationError("egress %q header %q: %v", entry.Origin, header.Name, err)
-			}
-			if strings.EqualFold(header.Name, "host") {
-				return nil, NewValidationError("egress %q: the gateway cannot set the Host header", entry.Origin)
-			}
-			if err := c.requireSecretKey(agent.Namespace, ref.Name, ref.Key); err != nil {
-				return nil, fmt.Errorf("egress %q header %q: %w", entry.Origin, header.Name, err)
-			}
-			bindings = append(bindings, binding)
-		}
-	}
-	return bindings, nil
-}
-
-// headerOrigin returns the host and port of an origin that may carry headers:
-// exact and https, since Substrate injects only into intercepted HTTPS.
-func headerOrigin(value string) (host, port string, err error) {
-	origin, err := egress.ParseOrigin(value)
-	if err != nil {
-		return "", "", NewValidationError("Agent egress: %v", err)
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || strings.HasPrefix(u.Hostname(), "*.") {
-		return "", "", NewValidationError("egress %q: headers need an exact https origin", value)
-	}
-	return u.Hostname(), u.Port(), nil
-}
-
-// checkEgressHeaderPorts refuses headers on a host the Agent also reaches over
-// HTTPS on another port: Substrate binds credentials per host, so they would
-// be sent there too.
-func checkEgressHeaderPorts(destinations []string, declared []v1alpha3.AgentEgress) error {
-	for _, entry := range declared {
-		if len(entry.Headers) == 0 {
-			continue
-		}
-		host, port, err := headerOrigin(entry.Origin)
-		if err != nil {
-			return err
-		}
-		for _, destination := range destinations {
-			u, err := url.Parse(destination)
-			if err == nil && u.Scheme == "https" && u.Hostname() == host && u.Port() != port {
-				return NewValidationError("egress %q: headers would also be sent to %s, since the gateway binds them per host", entry.Origin, destination)
-			}
-		}
-	}
-	return nil
-}
-
 // requireSecretKey returns a reference failure, which the controller retries.
 func (c *Compiler) requireSecretKey(namespace, name, key string) error {
-	secret := krt.FetchOne(c.ctx, c.collections.Secrets, krt.FilterObjectName(types.NamespacedName{Namespace: namespace, Name: name}))
-	if secret == nil {
-		return &SecretNotFoundError{Secret: types.NamespacedName{Namespace: namespace, Name: name}}
-	}
-	if _, ok := (*secret).Data[key]; !ok {
-		return &SecretNotFoundError{Secret: types.NamespacedName{Namespace: namespace, Name: name}, Key: key}
-	}
-	return nil
+	return RequireSecretKey(c.ctx, c.collections.Secrets, namespace, name, key)
 }
 
 // compileConfiguration compiles resolved configuration for the named Agent.

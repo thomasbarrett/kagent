@@ -473,7 +473,7 @@ func TestReconciliationWaitsForEgressHeaderSecret(t *testing.T) {
 		Spec:       kagentv1alpha3.ModelConfigSpec{Provider: kagentv1alpha3.ModelProviderOpenAI, Model: "gpt-5", APIKeySecret: "model-auth", APIKeySecretKey: "api-key"},
 	}
 	agent := testAgent(template, runtimeHarness)
-	agent.Spec.Egress = []kagentv1alpha3.AgentEgress{{Origin: "https://api.internal.example", Headers: []kagentv1alpha3.EgressHeader{{
+	agent.Spec.Egress = []kagentv1alpha3.EgressEntry{{Origin: "https://api.internal.example", Headers: []kagentv1alpha3.EgressHeader{{
 		Name: "Authorization", Prefix: "Bearer ",
 		ValueFrom: kagentv1alpha3.EgressHeaderSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "internal-api"}, Key: "token"}},
 	}}}}

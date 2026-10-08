@@ -60,14 +60,14 @@ spec:
                   one label, such as raw.githubusercontent.com. A wildcard needs two labels
                   under it, so nothing opens a whole top-level domain or every host.
                 items:
-                  description: AgentEgress is one origin an Agent may reach.
+                  description: EgressEntry is one origin a runtime may reach.
                   properties:
                     headers:
                       description: |-
                         Headers the egress gateway sets, so the runtime never holds their
                         values. The gateway only replaces a header the request sends, so the
                         runtime sends each with a placeholder. Credentials bind per host, not
-                        per port. Whoever can write the Agent can send any Secret in its
+                        per port. Whoever can write the resource can send any Secret in its
                         namespace to the origin.
                       items:
                         description: EgressHeader is a request header the egress gateway
@@ -89,7 +89,7 @@ spec:
                             properties:
                               secretKeyRef:
                                 description: SecretKeyRef is a key of a Secret in
-                                  the Agent's namespace.
+                                  the resource's namespace.
                                 properties:
                                   key:
                                     description: The key of the secret to select from.  Must

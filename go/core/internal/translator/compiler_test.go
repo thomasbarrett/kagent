@@ -1038,10 +1038,10 @@ func TestCompileAgentAddsTheAgentEgress(t *testing.T) {
 	require.ErrorAs(t, err, &validation)
 }
 
-func egressOrigins(origins ...string) []v1alpha3.AgentEgress {
-	entries := make([]v1alpha3.AgentEgress, len(origins))
+func egressOrigins(origins ...string) []v1alpha3.EgressEntry {
+	entries := make([]v1alpha3.EgressEntry, len(origins))
 	for i, origin := range origins {
-		entries[i] = v1alpha3.AgentEgress{Origin: origin}
+		entries[i] = v1alpha3.EgressEntry{Origin: origin}
 	}
 	return entries
 }
@@ -1067,7 +1067,7 @@ func TestCompileAgentBindsTheAgentEgressHeaders(t *testing.T) {
 	}
 	agent := &v1alpha3.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reader", Namespace: "test"}, Spec: v1alpha3.AgentSpec{
 		TemplateRef: &corev1.LocalObjectReference{Name: template.Name}, HarnessRef: &corev1.LocalObjectReference{Name: harness.Name},
-		Egress: []v1alpha3.AgentEgress{{Origin: "https://API.internal.example", Headers: []v1alpha3.EgressHeader{header("Authorization", "Bearer ", "internal-api", "token")}}},
+		Egress: []v1alpha3.EgressEntry{{Origin: "https://API.internal.example", Headers: []v1alpha3.EgressHeader{header("Authorization", "Bearer ", "internal-api", "token")}}},
 	}}
 	uri := "ate-secret://k8s.io/default/test/internal-api/token"
 
@@ -1124,7 +1124,7 @@ func TestCompileAgentBindsTheAgentEgressHeaders(t *testing.T) {
 			a.Spec.Egress[0].Headers = append(a.Spec.Egress[0].Headers, header("authorization", "", "internal-api", "other"))
 		},
 		"the host on another port": func(a *v1alpha3.Agent) {
-			a.Spec.Egress = append(a.Spec.Egress, v1alpha3.AgentEgress{Origin: "https://api.internal.example:8443"})
+			a.Spec.Egress = append(a.Spec.Egress, v1alpha3.EgressEntry{Origin: "https://api.internal.example:8443"})
 		},
 		"a runtime binding on the host": func(a *v1alpha3.Agent) { a.Spec.Egress[0].Origin = "https://api.openai.com" },
 	} {
@@ -1159,7 +1159,7 @@ func TestCompileAgentKeepsCallerTokenPassthrough(t *testing.T) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "test"}, Data: map[string][]byte{"token": []byte("t")}}
 	agent := &v1alpha3.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reader", Namespace: "test"}, Spec: v1alpha3.AgentSpec{
 		TemplateRef: &corev1.LocalObjectReference{Name: template.Name}, HarnessRef: &corev1.LocalObjectReference{Name: harness.Name},
-		Egress: []v1alpha3.AgentEgress{{Origin: "https://api.openai.com", Headers: []v1alpha3.EgressHeader{{
+		Egress: []v1alpha3.EgressEntry{{Origin: "https://api.openai.com", Headers: []v1alpha3.EgressHeader{{
 			Name: "Authorization", Prefix: "Bearer ",
 			ValueFrom: v1alpha3.EgressHeaderSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "shared"}, Key: "token"}},
 		}}}},
