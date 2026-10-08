@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +41,9 @@ type Executor struct {
 	runner       Runner
 	continuation ContinuationStore
 	telemetry    tracing.RuntimeTelemetry
+	// workspace is the runtime's working directory. Empty, the executor takes
+	// text only and returns no files.
+	workspace string
 
 	mu sync.Mutex
 	// state serializes access to the Actor's one native conversation. It also
@@ -91,12 +96,15 @@ func (*parkedTask) isExecutorState()    {}
 func (*cancelingTask) isExecutorState() {}
 
 type executionSink struct {
+	ctx            context.Context
 	reqCtx         *a2asrv.ExecutorContext
 	yield          func(a2atype.Event, error) bool
 	continuation   ContinuationStore
 	capture        *tracing.TextCapture
 	textArtifactID a2atype.ArtifactID
 	lastPosition   time.Time
+	// files reports what the turn writes in the workspace; nil without one.
+	files *workspaceFiles
 }
 
 var (
@@ -107,14 +115,20 @@ var (
 // New constructs the shared executor used by native Harness implementations.
 // The telemetry contract supplies the content-capture policy this executor
 // enforces; its zero value leaves capture disabled.
-func New(runner Runner, continuation ContinuationStore, telemetry tracing.RuntimeTelemetry) (*Executor, error) {
+func New(runner Runner, continuation ContinuationStore, telemetry tracing.RuntimeTelemetry, options ...Option) (*Executor, error) {
 	if runner == nil || continuation == nil {
 		return nil, fmt.Errorf("runner and continuation store are required")
 	}
 	if err := telemetry.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid runtime telemetry: %w", err)
 	}
-	return &Executor{runner: runner, continuation: continuation, telemetry: telemetry}, nil
+	executor := &Executor{runner: runner, continuation: continuation, telemetry: telemetry}
+	for _, option := range options {
+		if err := option(executor); err != nil {
+			return nil, err
+		}
+	}
+	return executor, nil
 }
 
 // Execute validates and serializes one A2A request onto the native Runner.
@@ -130,7 +144,7 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.ExecutorContext) 
 			// already completed the invocation.
 			invocation = nil
 		}
-		sink := &executionSink{reqCtx: reqCtx, yield: yield, continuation: e.continuation}
+		sink := &executionSink{ctx: ctx, reqCtx: reqCtx, yield: yield, continuation: e.continuation}
 		result := tracing.Result{}
 		endInvocation := func() {
 			invocation.SetAttributes(sink.captureAttributes(result)...)
@@ -167,7 +181,7 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.ExecutorContext) 
 			invocation.SetAttributes(tracing.RequestIdentity(reqCtx.ContextID, string(reqCtx.TaskID), resuming)...)
 		}
 
-		turn, err := validateRequest(reqCtx)
+		turn, uploads, err := validateRequest(reqCtx, e.workspace != "")
 		if err != nil {
 			fail("invalid_request", err)
 			return
@@ -260,6 +274,24 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.ExecutorContext) 
 		}
 		defer finish()
 
+		if e.workspace != "" {
+			// Uploads are written only once this request owns the Actor, so they
+			// never land in the middle of another turn.
+			saved, err := saveUploads(e.workspace, uploads)
+			if err != nil {
+				fail("invalid_upload", err)
+				return
+			}
+			if len(saved) > 0 {
+				turn.Prompt = strings.TrimSpace(turn.Prompt + "\n\n" + uploadNote(saved))
+			}
+			// The baseline includes the uploads, so only what the turn writes
+			// is returned.
+			if sink.files, err = newWorkspaceFiles(e.workspace); err != nil {
+				a2alog.Error(ctx, "failed to scan the workspace; output files will not be returned", err)
+			}
+		}
+
 		if !yield(a2atype.NewStatusUpdateEvent(reqCtx, a2atype.TaskStateWorking, nil), nil) {
 			result.Disposition = tracing.DispositionAbandoned
 			return
@@ -301,6 +333,15 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.ExecutorContext) 
 			message := taskMessage(reqCtx, "Harness runtime execution failed")
 			apia2a.SetTimelinePosition(message, sink.nextTimelinePosition())
 			yield(a2atype.NewStatusUpdateEvent(reqCtx, a2atype.TaskStateFailed, message), nil)
+			return
+		}
+		// Files written since the last tool result, such as by the final
+		// answer's own tool-free step, are returned before the turn settles.
+		if err := sink.emitWorkspaceChanges(); err != nil {
+			if outcome.Pending != nil {
+				_ = outcome.Pending.Cancel(context.Background())
+			}
+			result.Disposition = tracing.DispositionAbandoned
 			return
 		}
 		if outcome.Failure != nil && outcome.Pending != nil {
@@ -435,15 +476,52 @@ func (s *executionSink) ToolResult(event runtime.ToolResult) error {
 	if err != nil {
 		return err
 	}
-	return s.emitToolArtifact(part)
+	if err := s.emitToolArtifact(part); err != nil {
+		return err
+	}
+	// A tool result is where a file the agent wrote becomes final, so the
+	// caller sees it while the turn goes on.
+	return s.emitWorkspaceChanges()
+}
+
+// emitWorkspaceChanges sends each file written in the workspace since the last
+// call as an artifact of its own. Only a stopped consumer is an error: a file
+// that cannot be read is skipped, since the turn itself has not failed.
+func (s *executionSink) emitWorkspaceChanges() error {
+	if s.files == nil {
+		return nil
+	}
+	paths, err := s.files.changed()
+	if err != nil {
+		a2alog.Error(s.ctx, "failed to scan the workspace for output files", err)
+		return nil
+	}
+	for _, rel := range paths {
+		part, err := workspaceFilePart(s.files.root, rel)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				a2alog.Error(s.ctx, "failed to read a workspace output file", err)
+			}
+			continue
+		}
+		if err := s.emitArtifact(part, rel); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *executionSink) emitToolArtifact(part *a2atype.Part) error {
-	// Append relates deltas within one contiguous text run. Tool activity closes
-	// that run and is an agent-produced artifact of its own, matching the Go ADK's
-	// OutputArtifactPerEvent representation.
+	return s.emitArtifact(part, "")
+}
+
+func (s *executionSink) emitArtifact(part *a2atype.Part, name string) error {
+	// Append relates deltas within one contiguous text run. Tool activity and
+	// files close that run and are agent-produced artifacts of their own,
+	// matching the Go ADK's OutputArtifactPerEvent representation.
 	s.textArtifactID = ""
 	update := a2atype.NewArtifactEvent(s.reqCtx, part)
+	update.Artifact.Name = name
 	update.LastChunk = true
 	apia2a.SetTimelinePosition(update.Artifact, s.nextTimelinePosition())
 	if !s.yield(update, nil) {
@@ -676,62 +754,87 @@ func (e *Executor) deactivate(task *activeTask) bool {
 	return task.cancelRequested
 }
 
-func validateRequest(reqCtx *a2asrv.ExecutorContext) (runtime.Turn, error) {
+// validateRequest reads the turn a request asks for. A new turn is optional
+// text plus, when the executor has a workspace, any number of files.
+func validateRequest(reqCtx *a2asrv.ExecutorContext, acceptsFiles bool) (runtime.Turn, []upload, error) {
 	if reqCtx == nil || reqCtx.Message == nil {
-		return runtime.Turn{}, fmt.Errorf("A2A request message is required")
+		return runtime.Turn{}, nil, fmt.Errorf("A2A request message is required")
 	}
 	if reqCtx.TaskID == "" || reqCtx.ContextID == "" {
-		return runtime.Turn{}, fmt.Errorf("task ID and context ID are required")
+		return runtime.Turn{}, nil, fmt.Errorf("task ID and context ID are required")
 	}
 	if reqCtx.Message.Role != a2atype.MessageRoleUser {
-		return runtime.Turn{}, fmt.Errorf("harness runtime accepts only user messages")
+		return runtime.Turn{}, nil, fmt.Errorf("harness runtime accepts only user messages")
 	}
 	if reqCtx.StoredTask != nil && requiresInput(reqCtx.StoredTask.Status.State) {
 		approvalRequest, err := apia2a.ParseToolApprovalRequest(reqCtx.StoredTask.Status.Message)
 		if err != nil {
-			return runtime.Turn{}, err
+			return runtime.Turn{}, nil, err
 		}
 		if approvalRequest != nil {
 			response, err := apia2a.ParseToolApprovalResponse(reqCtx.Message)
 			if err != nil {
-				return runtime.Turn{}, err
+				return runtime.Turn{}, nil, err
 			}
 			if err := apia2a.ValidateToolApprovalResponse(approvalRequest, response); err != nil {
-				return runtime.Turn{}, err
+				return runtime.Turn{}, nil, err
 			}
 			decision := response.Approvals[0]
 			return runtime.Turn{InputResponse: &runtime.ApprovalDecision{
 				ID: decision.ID, Approved: decision.Approved, RejectionReason: decision.RejectionReason,
-			}}, nil
+			}}, nil, nil
 		}
 		askRequest, err := apia2a.ParseAskUserRequest(reqCtx.StoredTask.Status.Message)
 		if err != nil {
-			return runtime.Turn{}, err
+			return runtime.Turn{}, nil, err
 		}
 		if askRequest == nil {
-			return runtime.Turn{}, fmt.Errorf("stored input-required task has no supported request")
+			return runtime.Turn{}, nil, fmt.Errorf("stored input-required task has no supported request")
 		}
 		response, err := apia2a.ParseAskUserResponse(reqCtx.Message)
 		if err != nil {
-			return runtime.Turn{}, err
+			return runtime.Turn{}, nil, err
 		}
 		if err := apia2a.ValidateAskUserResponse(askRequest, response); err != nil {
-			return runtime.Turn{}, err
+			return runtime.Turn{}, nil, err
 		}
 		answers := make([][]string, len(response.Answers))
 		for index, answer := range response.Answers {
 			answers[index] = append([]string(nil), answer.Answer...)
 		}
-		return runtime.Turn{InputResponse: &runtime.AskUserResponse{ID: response.ID, Answers: answers}}, nil
+		return runtime.Turn{InputResponse: &runtime.AskUserResponse{ID: response.ID, Answers: answers}}, nil, nil
 	}
-	if len(reqCtx.Message.Parts) != 1 || reqCtx.Message.Parts[0] == nil {
-		return runtime.Turn{}, fmt.Errorf("harness runtime accepts exactly one user text part")
+	var text string
+	var uploads []upload
+	names := map[string]bool{}
+	for _, part := range reqCtx.Message.Parts {
+		if part == nil {
+			return runtime.Turn{}, nil, fmt.Errorf("A2A message contains an empty part")
+		}
+		if _, ok := part.Content.(a2atype.Text); ok {
+			if text != "" {
+				return runtime.Turn{}, nil, fmt.Errorf("harness runtime accepts at most one user text part")
+			}
+			text = part.Text()
+			continue
+		}
+		if !acceptsFiles {
+			return runtime.Turn{}, nil, fmt.Errorf("harness runtime accepts only a user text part")
+		}
+		file, err := parseUpload(part)
+		if err != nil {
+			return runtime.Turn{}, nil, err
+		}
+		if names[file.name] {
+			return runtime.Turn{}, nil, fmt.Errorf("two files are named %q", file.name)
+		}
+		names[file.name] = true
+		uploads = append(uploads, file)
 	}
-	text := reqCtx.Message.Parts[0].Text()
-	if text == "" {
-		return runtime.Turn{}, fmt.Errorf("harness runtime accepts a non-empty text part")
+	if text == "" && len(uploads) == 0 {
+		return runtime.Turn{}, nil, fmt.Errorf("harness runtime requires text or a file")
 	}
-	return runtime.Turn{Prompt: text}, nil
+	return runtime.Turn{Prompt: text}, uploads, nil
 }
 
 func requiresInput(state a2atype.TaskState) bool {

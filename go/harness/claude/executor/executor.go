@@ -29,9 +29,10 @@ type Config struct {
 // New validates the configuration and Claude installation, then returns the
 // executor and the resource to close on shutdown.
 func New(ctx context.Context, cfg Config) (a2asrv.AgentExecutor, io.Closer, error) {
+	workspace := cfg.DataDir + "/workspace"
 	runner, err := adapter.New(ctx, adapter.Input{
 		ConfigJSON: cfg.ConfigJSON,
-		Workspace:  cfg.DataDir + "/workspace", DurableDir: cfg.DataDir,
+		Workspace:  workspace, DurableDir: cfg.DataDir,
 		EphemeralDir: "/tmp/kagent-claude",
 		Environment:  cfg.Environment,
 	})
@@ -58,7 +59,7 @@ func New(ctx context.Context, cfg Config) (a2asrv.AgentExecutor, io.Closer, erro
 		_ = runner.Close()
 		return nil, nil, err
 	}
-	executor, err := runtimea2a.New(runner, store, parsed.RuntimeTelemetry)
+	executor, err := runtimea2a.New(runner, store, parsed.RuntimeTelemetry, runtimea2a.WithWorkspace(workspace))
 	if err != nil {
 		_ = runner.Close()
 		return nil, nil, err

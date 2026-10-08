@@ -58,6 +58,24 @@ Upstream A2A owns public tasks, contexts, history, and streaming semantics. A
 native continuation ID is private Actor state; it is not a second public session
 model.
 
+## Workspace files
+
+A user message carries at most one text part plus any number of file parts
+with raw bytes. The executor writes each file to `uploads/<name>` in the
+Actor's workspace, its working directory, and appends their paths and sizes
+to the prompt; the model opens them with its own tools, so file bytes never
+enter its context. A part whose `kagent.dev/a2a/content-encoding` metadata is
+`gzip` is decoded on the way to disk, which lets a large text file such as a
+KML cross the gRPC message limit.
+
+Files the turn writes in the workspace come back after each tool result and
+before the turn's terminal status, one artifact per file. Its raw part names
+the workspace-relative path and has part type `file`; one gzipped to fit is
+marked as above, and one that cannot fit is a `file_too_large` data part with
+its path and size. Hidden entries, `node_modules`, and `__pycache__` are
+skipped. All of this happens inside the turn, so snapshots and quiescence are
+unchanged.
+
 ## Human-in-the-loop runtime contract
 
 A native driver returns ordinary completion or failure through

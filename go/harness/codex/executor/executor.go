@@ -27,8 +27,9 @@ type Config struct {
 
 // New validates the configuration and Codex installation, then returns the executor.
 func New(ctx context.Context, cfg Config) (a2asrv.AgentExecutor, error) {
+	workspace := cfg.DataDir + "/workspace"
 	runner, err := adapter.New(ctx, adapter.Input{
-		ConfigJSON: cfg.ConfigJSON, Workspace: cfg.DataDir + "/workspace", DurableDir: cfg.DataDir, Environment: cfg.Environment,
+		ConfigJSON: cfg.ConfigJSON, Workspace: workspace, DurableDir: cfg.DataDir, Environment: cfg.Environment,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure Codex Harness: %w", err)
@@ -50,7 +51,7 @@ func New(ctx context.Context, cfg Config) (a2asrv.AgentExecutor, error) {
 	if err != nil {
 		return nil, err
 	}
-	executor, err := runtimea2a.New(runner, store, parsed.RuntimeTelemetry)
+	executor, err := runtimea2a.New(runner, store, parsed.RuntimeTelemetry, runtimea2a.WithWorkspace(workspace))
 	if err != nil {
 		return nil, err
 	}

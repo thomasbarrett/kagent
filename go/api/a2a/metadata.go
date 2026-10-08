@@ -12,6 +12,9 @@ const (
 	TaskCreatedAtMetadataKey    = MetadataPrefix + "task-created-at"
 	PartTypeMetadataKey         = MetadataPrefix + "part-type"
 	UsageMetadataKey            = MetadataPrefix + "usage"
+	// ContentEncodingMetadataKey names the encoding of a raw part's bytes, so
+	// a large text file can cross the gRPC message limit compressed.
+	ContentEncodingMetadataKey = MetadataPrefix + "content-encoding"
 )
 
 // SetTimelinePosition records the temporary task-timeline ordering key.
