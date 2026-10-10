@@ -101,7 +101,8 @@ type Agent struct {
 	Model       string `json:"model,omitempty"`
 }
 
-// Claude Code writes a tool result's images as base64 twice on one line.
+// Bounds the memory one stream-json line can take. Tool results carrying
+// images run to a few megabytes.
 const maxEventBytes = 16 << 20
 
 func Production(model, instruction string) Config {

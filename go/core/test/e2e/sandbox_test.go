@@ -263,21 +263,12 @@ func TestSandboxMCP(t *testing.T) {
 		require.Nil(t, result["structuredContent"], "content tools must not return structured output")
 		return mcpResultText(result)
 	}
-	require.Equal(t, "1: from MCP\n", text("read_sandbox_file", map[string]any{"sandbox_id": sandbox.Id, "path": "mcp.txt"}))
+	require.Equal(t, "1\tfrom MCP\n", text("read_sandbox_file", map[string]any{"sandbox_id": sandbox.Id, "path": "mcp.txt"}))
 	var process struct {
 		ID string `json:"process_id"`
 	}
 	call("start_sandbox_process", map[string]any{"sandbox_id": sandbox.Id, "command": []string{"cat", "mcp.txt"}}, &process)
 	require.NotEmpty(t, process.ID)
-	require.Eventually(t, func() bool {
-		var status struct {
-			Status string `json:"status"`
-		}
-		call("get_sandbox_process", map[string]any{"sandbox_id": sandbox.Id, "process_id": process.ID}, &status)
-		return status.Status == "PROCESS_STATUS_COMPLETED"
-	}, time.Minute, time.Second)
-	require.Equal(t, "stdout_offset=8 stderr_offset=0\n--- stdout ---\nfrom MCP",
-		text("read_sandbox_outputs", map[string]any{"sandbox_id": sandbox.Id, "process_id": process.ID}))
 	var deleted struct {
 		State string `json:"state"`
 	}

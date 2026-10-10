@@ -77,7 +77,8 @@ type MCPServer struct {
 	RequireApproval bool              `json:"require_approval,omitempty"`
 }
 
-// App Server notifications carry a tool result's images as base64.
+// Bounds the memory one JSON-RPC frame can take. Frames carry a tool
+// result's images as base64.
 const maxFrameBytes = 16 << 20
 
 func Production(model, instruction string) Config {

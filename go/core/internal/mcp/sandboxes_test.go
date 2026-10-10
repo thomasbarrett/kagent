@@ -2,13 +2,14 @@ package mcp
 
 import (
 	"bytes"
-	"encoding/base64"
+	"errors"
 	"image"
 	"image/png"
+	"io"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/kagent-dev/kagent/go/core/internal/service/sandbox"
@@ -28,8 +29,8 @@ func TestSandboxToolsRegisteredAndValidateBeforeDispatch(t *testing.T) {
 	for _, value := range list["result"].(map[string]any)["tools"].([]any) {
 		tool := value.(map[string]any)
 		registered[tool["name"].(string)] = true
-		if name := tool["name"]; name == "read_sandbox_outputs" || name == "read_sandbox_file" {
-			require.Nil(t, tool["outputSchema"], name)
+		if tool["name"] == "read_sandbox_file" {
+			require.Nil(t, tool["outputSchema"])
 		}
 	}
 	for _, test := range []struct {
@@ -58,47 +59,6 @@ func TestSandboxToolsRegisteredAndValidateBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestDecodeText(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		data     []byte
-		text     string
-		consumed int
-	}{
-		{"empty", nil, "", 0},
-		{"text", []byte("héllo\n"), "héllo\n", 7},
-		{"read cut a rune short", []byte("h\xc3"), "h", 1},
-		{"read cut a four-byte rune short", []byte("ok\xf0\x9f\x98"), "ok", 2},
-		{"remainder of a cut rune alone", []byte("\xc3"), "\uFFFD", 1},
-		{"invalid bytes", []byte("a\xffb"), "a\uFFFDb", 3},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			text, consumed := decodeText(test.data)
-			require.Equal(t, test.text, text)
-			require.Equal(t, test.consumed, consumed)
-		})
-	}
-}
-
-func TestProcessOutputsRender(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		read processOutputs
-		want string
-	}{
-		{"nothing new", processOutputs{stdoutOffset: 4, stderrOffset: 2}, "stdout_offset=4 stderr_offset=2\nno new output"},
-		{"both streams", processOutputs{stdout: []byte("out\n"), stderr: []byte("err\n")},
-			"stdout_offset=4 stderr_offset=4\n--- stdout ---\nout\n\n--- stderr ---\nerr\n"},
-		{"more to read, holding back a cut rune", processOutputs{stdout: []byte("ab\xc3"), stdoutOffset: 10, more: true},
-			"stdout_offset=12 stderr_offset=0 (more output: read again from these offsets)\n--- stdout ---\nab"},
-		{"invalid bytes", processOutputs{stderr: []byte("\xff")}, "stdout_offset=0 stderr_offset=1\n--- stderr ---\n\uFFFD"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			require.Equal(t, test.want, test.read.render())
-		})
-	}
-}
-
 func encodePNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	var b bytes.Buffer
@@ -108,36 +68,21 @@ func encodePNG(t *testing.T, width, height int) []byte {
 
 func readFile(t *testing.T, data []byte, offset, limit int) []mcp.Content {
 	t.Helper()
-	reader := fileReader{page: linePage{offset: offset, limit: limit}}
-	// Small chunks split lines and runes across writes.
-	for chunk := range slices.Chunk(data, 7) {
-		if err := reader.write(chunk); err != nil {
-			require.ErrorIs(t, err, errReadDone)
-			break
-		}
-	}
-	return reader.content()
+	// Byte-at-a-time reads split lines and runes across reads.
+	content, err := readFileContent(iotest.OneByteReader(bytes.NewReader(data)), offset, limit)
+	require.NoError(t, err)
+	return content
 }
 
-func TestFileReader(t *testing.T) {
+func TestReadFileContent(t *testing.T) {
 	small := encodePNG(t, 3, 2)
+	t.Run("read error", func(t *testing.T) {
+		failure := errors.New("guest unavailable")
+		_, err := readFileContent(io.MultiReader(strings.NewReader("alpha\n"), iotest.ErrReader(failure)), 1, 10)
+		require.ErrorIs(t, err, failure)
+	})
 	t.Run("image", func(t *testing.T) {
-		require.Equal(t, []mcp.Content{&mcp.TextContent{Text: "image/png, 3×2 px"}, &mcp.ImageContent{Meta: sandboxImageMeta, Data: small, MIMEType: "image/png"}}, readFile(t, small, 1, 10))
-	})
-	t.Run("webp image", func(t *testing.T) {
-		webp, err := base64.StdEncoding.DecodeString("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")
-		require.NoError(t, err)
-		require.Equal(t, []mcp.Content{&mcp.TextContent{Text: "image/webp, 1×1 px"}, &mcp.ImageContent{Meta: sandboxImageMeta, Data: webp, MIMEType: "image/webp"}}, readFile(t, webp, 1, 10))
-	})
-	t.Run("oversized image is scaled down", func(t *testing.T) {
-		content := readFile(t, encodePNG(t, 2*sandboxImageMaxPixels, 4), 1, 10)
-		require.Len(t, content, 2)
-		require.Equal(t, "image/png, 4000×4 px, shown at 2000×2", content[0].(*mcp.TextContent).Text)
-		scaled := content[1].(*mcp.ImageContent)
-		require.Equal(t, "image/jpeg", scaled.MIMEType)
-		config, _, err := image.DecodeConfig(bytes.NewReader(scaled.Data))
-		require.NoError(t, err)
-		require.Equal(t, image.Config{ColorModel: config.ColorModel, Width: sandboxImageMaxPixels, Height: 2}, config)
+		require.Equal(t, []mcp.Content{&mcp.ImageContent{Data: small, MIMEType: "image/png"}}, readFile(t, small, 1, 10))
 	})
 	lines := "alpha\nbéta\ngamma\ndelta"
 	for _, test := range []struct {
@@ -146,14 +91,18 @@ func TestFileReader(t *testing.T) {
 		offset, limit int
 		want          string
 	}{
-		{"image over 16 MiB", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, sandboxImageBytes)...), 1, 10, "image/png image over 16 MiB, too large to read"},
-		{"whole text", []byte(lines), 1, 10, "1: alpha\n2: béta\n3: gamma\n4: delta\n"},
-		{"first page", []byte(lines), 1, 2, "1: alpha\n2: béta\n(lines 1–2; continue with offset=3)"},
-		{"last page", []byte(lines), 3, 2, "3: gamma\n4: delta\n"},
+		{"image over the limit", append(small, make([]byte, maxSandboxImageBytes)...), 1, 10, "Image exceeds maximum allowed size (10485760 bytes). Write a smaller copy in the sandbox and read that instead."},
+		{"whole text", []byte(lines), 1, 10, "1\talpha\n2\tbéta\n3\tgamma\n4\tdelta\n"},
+		{"first page", []byte(lines), 1, 2, "1\talpha\n2\tbéta\n(lines 1–2; continue with offset=3)"},
+		{"last page", []byte(lines), 3, 2, "3\tgamma\n4\tdelta\n"},
 		{"past the end", []byte(lines), 9, 2, "(the file has 4 lines)"},
-		{"long line", []byte(strings.Repeat("x", sandboxFileLineBytes+1) + "\nnext\n"), 1, 10,
-			"1: " + strings.Repeat("x", sandboxFileLineBytes) + " [line cut]\n2: next\n"},
-		{"text beyond the 1 MiB limit", []byte(strings.Repeat("line\n", sandboxToolBytes)), 1, 1, "1: line\n(lines 1–1; continue with offset=2)"},
+		{"long line", []byte(strings.Repeat("x", maxSandboxLineBytes+1) + "\nnext\n"), 1, 10,
+			"1\t" + strings.Repeat("x", maxSandboxLineBytes) + " [line cut]\n2\tnext\n"},
+		{"text beyond the 1 MiB limit", []byte(strings.Repeat("line\n", sandboxToolBytes)), 1, 1, "1\tline\n(lines 1–1; continue with offset=2)"},
+		{"line that only fits", []byte(strings.Repeat("x", maxSandboxLineBytes) + "\nnext\n"), 1, 10,
+			"1\t" + strings.Repeat("x", maxSandboxLineBytes) + "\n2\tnext\n"},
+		{"crlf line endings", []byte("alpha\r\nbeta\r\n"), 1, 10, "1\talpha\n2\tbeta\n"},
+		{"empty file", nil, 1, 10, "(the file has 0 lines)"},
 		{"binary", []byte{0x00, 0xff}, 1, 10, "binary file, application/octet-stream"},
 		{"binary beyond its first bytes", make([]byte, sandboxToolBytes+1), 1, 10, "binary file, application/octet-stream"},
 	} {
