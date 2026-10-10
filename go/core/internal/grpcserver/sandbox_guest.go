@@ -63,18 +63,6 @@ func (s *sandboxGuestServer) StreamProcessOutput(request *guestpb.StreamProcessO
 	return s.service.StreamProcessOutput(stream.Context(), id, request, stream.Send)
 }
 
-func (s *sandboxGuestServer) WriteProcessInput(stream grpc.ClientStreamingServer[guestpb.WriteProcessInputRequest, guestpb.WriteProcessInputResponse]) error {
-	id, err := sandboxID(stream.Context())
-	if err != nil {
-		return err
-	}
-	result, err := s.service.WriteProcessInput(stream.Context(), id, stream.Recv)
-	if err != nil {
-		return err
-	}
-	return stream.SendAndClose(result)
-}
-
 func (s *sandboxGuestServer) ReadFile(request *guestpb.ReadFileRequest, stream grpc.ServerStreamingServer[guestpb.ReadFileResponse]) error {
 	id, err := sandboxID(stream.Context())
 	if err != nil {

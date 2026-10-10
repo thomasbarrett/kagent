@@ -89,9 +89,8 @@ func TestSandboxGuestPoliciesMatchTheirEffect(t *testing.T) {
 	for method, expected := range map[string]pkgauth.AccessMode{
 		guestpb.ProcessService_StartProcess_FullMethodName:        pkgauth.AccessCreate,
 		guestpb.ProcessService_GetProcess_FullMethodName:          pkgauth.AccessRead,
-		guestpb.ProcessService_StreamProcessOutput_FullMethodName: pkgauth.AccessRead,
-		guestpb.ProcessService_WriteProcessInput_FullMethodName:   pkgauth.AccessUpdate,
 		guestpb.ProcessService_SignalProcess_FullMethodName:       pkgauth.AccessUpdate,
+		guestpb.ProcessService_StreamProcessOutput_FullMethodName: pkgauth.AccessRead,
 		guestpb.FileSystemService_ReadFile_FullMethodName:         pkgauth.AccessRead,
 		guestpb.FileSystemService_WriteFile_FullMethodName:        pkgauth.AccessUpdate,
 	} {

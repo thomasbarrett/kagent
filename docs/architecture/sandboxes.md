@@ -198,7 +198,7 @@ The apiserver registers three services on the same listener:
 | Service | Operations |
 | --- | --- |
 | `kagent.api.v1alpha1.SandboxService` | Create, Get, List, Suspend, Resume, Delete |
-| `ateenv.v1alpha.ProcessService` | StartProcess, GetProcess, StreamProcessOutput, WriteProcessInput, SignalProcess |
+| `ateenv.v1alpha.ProcessService` | StartProcess, GetProcess, SignalProcess, StreamProcessOutput |
 | `ateenv.v1alpha.FileSystemService` | ReadFile, WriteFile |
 
 Execution uses env's exact services, requests, responses, and streaming messages.
@@ -229,9 +229,8 @@ is delegated to env; adding annotations upstream is a follow-up. Kagent validate
 sandbox routing and enforces authorization, expiration, and transfer limits.
 The env dependency remains pinned. Message changes come from the dependency;
 new upstream RPCs require explicit forwarding and access policies. A sandbox keeps
-the guest image it was prepared with, and the controller talks to it with the
-pinned messages, so an env upgrade that changes them requires deleting existing
-sandboxes.
+the guest image it was prepared with, so an env upgrade that changes the guest
+messages requires deleting existing sandboxes.
 
 Resource authorization and owner checks apply before routing guest traffic. Agent
 share tokens grant no sandbox access. An agent calling MCP operates under the
@@ -287,8 +286,7 @@ mutations make one attempt and follow the [retry contract](../lifecycle-retries.
 copies stdout/stderr to the corresponding local streams and returns the remote
 exit code. `--wait=false` returns the process ID immediately. `wait ID PROCESS_ID`
 resumes observation with optional `--stdout-offset` and `--stderr-offset`;
-`process` inspects state and `kill` signals the process group, SIGKILL unless
-`--signal` names another. `--timeout` bounds
+`process` inspects status and `kill` terminates the process. `--timeout` bounds
 the command. Interrupted observation does not kill or restart remote work.
 
 `upload ID LOCAL_FILE REMOTE_PATH` and `download ID REMOTE_PATH LOCAL_FILE` stream

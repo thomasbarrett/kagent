@@ -128,10 +128,8 @@ func (c *SandboxClient) SignalProcess(ctx context.Context, sandboxID string, req
 	return guestpb.NewProcessServiceClient(conn).SignalProcess(ctx, request)
 }
 
-// ReadProcessOutput drains the upstream stream, which ends with an exit
-// message once the process has exited and its output is delivered. The caller
-// owns continuation offsets and whether to follow output; callbacks may stop
-// the stream with an error.
+// ReadProcessOutput drains the upstream stream. The caller owns continuation
+// offsets and whether to follow output; callbacks may stop the stream with an error.
 func (c *SandboxClient) ReadProcessOutput(ctx context.Context, sandboxID string, request *guestpb.StreamProcessOutputRequest, receive func(*guestpb.ProcessOutput) error) error {
 	conn, ctx, cancel, err := c.guestCall(ctx, sandboxID)
 	if err != nil {

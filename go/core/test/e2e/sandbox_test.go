@@ -176,20 +176,19 @@ func TestSandboxLifecycle(t *testing.T) {
 	outputs, err := f.processes.StreamProcessOutput(f.guestContext(id), &guestpb.StreamProcessOutputRequest{ProcessId: process.ProcessId, Follow: true})
 	require.NoError(t, err)
 	var stdout, stderr []byte
-	var finished *guestpb.Process
 	for {
 		chunk, err := outputs.Recv()
 		if err == io.EOF {
 			break
 		}
 		require.NoError(t, err)
-		require.Nil(t, finished, "the exit message ends the stream")
 		stdout = append(stdout, chunk.GetStdout()...)
 		stderr = append(stderr, chunk.GetStderr()...)
-		finished = chunk.GetExit()
 	}
 	require.Equal(t, "hello", string(stdout))
 	require.Equal(t, "warning", string(stderr))
+	finished, err := f.processes.GetProcess(f.guestContext(id), &guestpb.GetProcessRequest{ProcessId: process.ProcessId})
+	require.NoError(t, err)
 	require.True(t, exitedCleanly(finished))
 	require.Equal(t, "once", string(f.read(t, id, "count")))
 	again, err := f.processes.StartProcess(f.guestContext(id), start)

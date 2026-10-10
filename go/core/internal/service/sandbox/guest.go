@@ -152,34 +152,6 @@ func (s *Service) StreamProcessOutput(ctx context.Context, sandboxID string, req
 	}
 }
 
-func (s *Service) WriteProcessInput(ctx context.Context, sandboxID string, recv func() (*guestpb.WriteProcessInputRequest, error)) (*guestpb.WriteProcessInputResponse, error) {
-	guestCtx, cancelGuest, err := s.guestAccess(ctx, sandboxID, auth.VerbUpdate)
-	if err != nil {
-		return nil, err
-	}
-	defer cancelGuest()
-	stream, err := guestpb.NewProcessServiceClient(s.config.Guests.conn).WriteProcessInput(guestCtx)
-	if err != nil {
-		return nil, err
-	}
-	for {
-		chunk, err := recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if err := stream.Send(chunk); errors.Is(err, io.EOF) {
-			// Receive the guest's status when it rejects the input early.
-			return stream.CloseAndRecv()
-		} else if err != nil {
-			return nil, err
-		}
-	}
-	return stream.CloseAndRecv()
-}
-
 func (s *Service) ReadFile(ctx context.Context, sandboxID string, request *guestpb.ReadFileRequest, send func(*guestpb.ReadFileResponse) error) error {
 	guestCtx, cancelGuest, err := s.guestAccess(ctx, sandboxID, auth.VerbGet)
 	if err != nil {

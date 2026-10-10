@@ -126,14 +126,6 @@ func TestSandboxTransports(t *testing.T) {
 			_, err = stream.Recv()
 			return err
 		}},
-		{"input", func(ctx context.Context) error {
-			stream, err := processes.WriteProcessInput(ctx)
-			if err != nil {
-				return err
-			}
-			_, err = stream.CloseAndRecv()
-			return err
-		}},
 		{"read", func(ctx context.Context) error {
 			stream, err := files.ReadFile(ctx, &guestpb.ReadFileRequest{Path: "grpc.bin"})
 			if err != nil {
@@ -235,32 +227,6 @@ func TestSandboxTransports(t *testing.T) {
 		output = append(output, chunk.GetStdout()...)
 	}
 	require.Equal(t, "mcp", string(output))
-	result, err = session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "start_sandbox_process", Arguments: map[string]any{
-		"sandbox_id": id, "command": []string{"sleep", "60"},
-	}})
-	require.NoError(t, err)
-	require.False(t, result.IsError, "%+v", result.Content)
-	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(*sdkmcp.TextContent).Text), &process))
-	result, err = session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "kill_sandbox_process", Arguments: map[string]any{
-		"sandbox_id": id, "process_id": process.ID,
-	}})
-	require.NoError(t, err)
-	require.False(t, result.IsError, "%+v", result.Content)
-	var killed struct {
-		State    string `json:"state"`
-		ExitCode int32  `json:"exit_code"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(*sdkmcp.TextContent).Text), &killed))
-	require.Equal(t, guestpb.ProcessState_PROCESS_STATE_EXITED.String(), killed.State, "kill waits for the exit")
-	require.EqualValues(t, 128+guestpb.Signal_SIGNAL_KILL, killed.ExitCode)
-	result, err = session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "kill_sandbox_process", Arguments: map[string]any{
-		"sandbox_id": id, "process_id": process.ID,
-	}})
-	require.NoError(t, err)
-	require.False(t, result.IsError, "killing an exited process reports its exit: %+v", result.Content)
-	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(*sdkmcp.TextContent).Text), &killed))
-	require.Equal(t, guestpb.ProcessState_PROCESS_STATE_EXITED.String(), killed.State)
-	require.EqualValues(t, 128+guestpb.Signal_SIGNAL_KILL, killed.ExitCode)
 	_, err = processes.GetProcess(ctx, &guestpb.GetProcessRequest{ProcessId: "unknown-guest-process"})
 	require.Equal(t, codes.NotFound, status.Code(err))
 	require.Equal(t, []string{"create", "policy", "resume"}, actors.observedCalls(), "guest traffic must never call the Substrate control-plane client")
