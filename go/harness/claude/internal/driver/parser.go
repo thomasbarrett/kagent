@@ -3,6 +3,7 @@ package driver
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -254,11 +255,9 @@ func (p *parser) parseUser(raw json.RawMessage, emit func(Event) error) error {
 		if _, emitted := p.emittedResults[content.ToolUseID]; emitted {
 			return fmt.Errorf("claude tool_result for %q was emitted more than once", content.ToolUseID)
 		}
-		var result any
-		if len(content.Content) != 0 && string(content.Content) != "null" {
-			if err := json.Unmarshal(content.Content, &result); err != nil {
-				return fmt.Errorf("decode Claude tool_result %q content: %w", content.ToolUseID, err)
-			}
+		result, err := decodeToolResult(content.Content)
+		if err != nil {
+			return fmt.Errorf("decode Claude tool_result %q content: %w", content.ToolUseID, err)
 		}
 		p.emittedResults[content.ToolUseID] = struct{}{}
 		if err := emit(Event{
@@ -269,6 +268,43 @@ func (p *parser) parseUser(raw json.RawMessage, emit func(Event) error) error {
 		}
 	}
 	return nil
+}
+
+// imageBlock is an image in a tool_result's content blocks.
+type imageBlock struct {
+	Type   string `json:"type"`
+	Source struct {
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	} `json:"source"`
+}
+
+// decodeToolResult decodes a tool_result's content, a string or content
+// blocks. Images keep their media type and size but not their data: the model
+// has already seen them, and stored task history would otherwise carry every
+// image a turn reads.
+func decodeToolResult(raw json.RawMessage) (any, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var blocks []json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil {
+		var result any
+		err := json.Unmarshal(raw, &result)
+		return result, err
+	}
+	result := make([]any, len(blocks))
+	for i, block := range blocks {
+		var image imageBlock
+		if json.Unmarshal(block, &image) == nil && image.Type == "image" && image.Source.Data != "" {
+			result[i] = map[string]any{"type": "image", "media_type": image.Source.MediaType, "bytes": base64.StdEncoding.DecodedLen(len(image.Source.Data))}
+			continue
+		}
+		if err := json.Unmarshal(block, &result[i]); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (p *parser) blockKey(index int) string {

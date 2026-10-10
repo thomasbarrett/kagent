@@ -2,9 +2,11 @@ package driver
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -221,4 +223,28 @@ func (r *fragmentReader) Read(p []byte) (int, error) {
 	copy(p, r.data[:n])
 	r.data = r.data[n:]
 	return n, nil
+}
+
+func TestDecodeToolResult(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want any
+	}{
+		{"image data is not kept", `[{"type":"text","text":"a plot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]`,
+			[]any{map[string]any{"type": "text", "text": "a plot"}, map[string]any{"type": "image", "media_type": "image/png", "bytes": 3}}},
+		{"text", `"done"`, "done"},
+		{"null", `null`, nil},
+		{"absent", ``, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := decodeToolResult(json.RawMessage(test.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("decodeToolResult() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
 }
